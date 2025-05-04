@@ -363,6 +363,7 @@ class SSDPServer(asyncio.DatagramProtocol):
 
         discover_patterns = [
             "ST: urn:Belkin:device:**",
+            "ST: urn:Belkin:device:",
             "ST: urn:Belkin:service:basicevent:1",
             "ST: upnp:rootdevice",
             "ST: ssdp:all",
