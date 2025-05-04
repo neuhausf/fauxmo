@@ -58,7 +58,7 @@ def make_serial(name: str) -> str:
         Persistent UUID as string
 
     """
-    return str(uuid.uuid3(uuid.NAMESPACE_X500, name))
+    return str(uuid.uuid3(uuid.NAMESPACE_X500, name)).replace("-", "").upper()
 
 
 def module_from_file(modname: str, path_str: str) -> ModuleType:
