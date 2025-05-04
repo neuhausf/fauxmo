@@ -162,6 +162,12 @@ class Fauxmo(asyncio.Protocol):
             if state in ["off", "on"]:
                 success = True
                 return_val = str(int(state.lower() == "on"))
+        elif command_format("GetInsightParams").casefold() in msg.casefold().replace(" ", ""):
+            action = "Get"
+            action_type = "InsightParams"
+            return_val = "8|1549126755|0|0|0|9319|10|0|0|0.000000|7000"
+            success = True
+            logger.info(f"{self.plugin.name} returning insight parameters")
 
         elif command_format("SetBinaryState").casefold() in msg.casefold().replace(" ", ""):
             action = "Set"
