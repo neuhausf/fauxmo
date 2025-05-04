@@ -67,7 +67,7 @@ class Fauxmo(asyncio.Protocol):
             self.handle_metainfo()
         elif (
             msg.startswith("POST") 
-            and msg.endswith("/upnp/control/basicevent1 HTTP/1.1")
+            and "/upnp/control/basicevent1 HTTP/1.1" in msg
         ):
             logger.info("request BasicEvent1")
             self.handle_action(msg)
