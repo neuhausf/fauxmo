@@ -65,7 +65,10 @@ class Fauxmo(asyncio.Protocol):
         elif "/metainfoservice.xml" in msg:
             logger.info("metainfoservice.xml request by Echo")
             self.handle_metainfo()
-        elif msg.startswith("POST /upnp/control/basicevent1 HTTP/1.1"):
+        elif (
+            msg.startswith("POST") 
+            and msg.endsswith("/upnp/control/basicevent1 HTTP/1.1")
+        ):
             logger.info("request BasicEvent1")
             self.handle_action(msg)
 
