@@ -138,7 +138,7 @@ class Fauxmo(asyncio.Protocol):
         ).format
 
         command_format = (
-            'SOAPACTION: "urn:Belkin:service:basicevent:1#{}"'
+            'SOAPACTION:"urn:Belkin:service:basicevent:1#{}"'
         ).format
 
         soap_message: str | None = None
@@ -147,7 +147,7 @@ class Fauxmo(asyncio.Protocol):
         return_val: str | None = None
         success: bool = False
 
-        if command_format("GetBinaryState").casefold() in msg.casefold():
+        if command_format("GetBinaryState").casefold() in msg.casefold().replace(" ", ""):
             logger.info(f"Attempting to get state for {self.plugin.name}")
 
             action = "Get"
@@ -160,7 +160,7 @@ class Fauxmo(asyncio.Protocol):
                 success = True
                 return_val = str(int(state.lower() == "on"))
 
-        elif command_format("SetBinaryState").casefold() in msg.casefold():
+        elif command_format("SetBinaryState").casefold() in msg.casefold().replace(" ", ""):
             action = "Set"
             action_type = "BinaryState"
 
@@ -177,7 +177,7 @@ class Fauxmo(asyncio.Protocol):
             else:
                 logger.warning(f"Unrecognized request:\n{msg}")
 
-        elif command_format("GetFriendlyName").casefold() in msg.casefold():
+        elif command_format("GetFriendlyName").casefold() in msg.casefold().replace(" ", ""):
             action = "Get"
             action_type = "FriendlyName"
             return_val = self.plugin.name
