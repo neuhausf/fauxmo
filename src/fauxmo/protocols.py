@@ -6,6 +6,7 @@ import asyncio
 import random
 import typing as t
 import uuid
+import time
 from email.utils import formatdate
 from typing import cast
 
@@ -54,8 +55,11 @@ class Fauxmo(asyncio.Protocol):
 
         """
         msg = data.decode()
-
+        #addr = self.transport.get_extra_info("peername")
+        
+        #if "192.168.1.211" in addr:
         logger.debug(f"Received message:\n{msg}")
+        
         if msg.startswith("GET /setup.xml HTTP/1.1"):
             logger.info("setup.xml requested by Echo")
             self.handle_setup()
@@ -65,6 +69,21 @@ class Fauxmo(asyncio.Protocol):
         elif "/metainfoservice.xml" in msg:
             logger.info("metainfoservice.xml request by Echo")
             self.handle_metainfo()
+        elif "/insightservice.xml" in msg:
+            logger.info("insightservice.xml request by Echo")
+            self.handle_insight()
+        elif (
+            msg.startswith("POST") 
+            and "/upnp/control/insight1 HTTP/1.1" in msg
+        ):
+            logger.info("request insight1")
+            self.handle_action(msg)
+        elif (
+            msg.startswith("POST") 
+            and "/upnp/control/timesync1 HTTP/1.1" in msg
+        ):
+            logger.info("request TimeSync1")
+            self.handle_timesync_command(msg)
         elif (
             msg.startswith("POST") 
             and "/upnp/control/basicevent1 HTTP/1.1" in msg
@@ -72,20 +91,52 @@ class Fauxmo(asyncio.Protocol):
             logger.info("request BasicEvent1")
             self.handle_action(msg)
 
+    def handle_timesync_command(self, msg: str) -> None:
+        """Respond to request for timesync."""
+        if not self.transport:
+            raise Exception("No transport")
+        
+        soap_format = (
+            "<s:Envelope "
+            'xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+            "<s:Body>"
+            "<u:TimeSyncResponse "
+            'xmlns:u="urn:Belkin:service:timesync:1">'
+            "<UTC>{return_val}</UTC>"
+            "</u:TimeSyncResponse>"
+            "</s:Body>"
+            "</s:Envelope>"
+        ).format
+        
+        soap_message = soap_format(
+            return_val=int(time.time()) 
+        )
+        timesync_response = self.add_http_headers(soap_message)
+        logger.debug(f"Fauxmo response to timesync request:\n{timesync_response}")
+        self.transport.write(timesync_response.encode())
+        self.transport.close()
+        
     def handle_setup(self) -> None:
         """Create a response to the Echo's setup request."""
         setup_xml = (
             '<?xml version="1.0"?>'
-            "<root>"
+            '<root xmlns="urn:Belkin:device-1-0">'
             "<specVersion><major>1</major><minor>0</minor></specVersion>"
             "<device>"
-            "<deviceType>urn:Belkin:device:controllee:1</deviceType>"
+            "<deviceType>urn:Belkin:device:insight:1</deviceType>"
             f"<friendlyName>{self.name}</friendlyName>"
             "<manufacturer>Belkin International Inc.</manufacturer>"
-            "<modelName>Emulated Socket</modelName>"
-            "<modelNumber>3.1415</modelNumber>"
+            "<modelName>Insight</modelName>"
+            "<modelNumber>1.0</modelNumber>"
             f"<serialNumber>{self.serial}</serialNumber>"
-            f"<UDN>uuid:Socket-1_0-{self.serial}</UDN>"
+            f"<UDN>uuid:Insight-1_0-{self.serial}</UDN>"
+            "<UPC>123456789</UPC>"
+            "<macAddress>001122334455</macAddress>"
+            "<firmwareVersion>WeMo_WW_2.00.11532.PVT-OWRT-InsightV2</firmwareVersion>"
+            "<iconVersion>3|49153</iconVersion>"
+            "<binaryState>0</binaryState>"
+            "<binaryOption>1</binaryOption>"
             "<serviceList>"
             "<service>"
             "<serviceType>urn:Belkin:service:basicevent:1</serviceType>"
@@ -100,6 +151,13 @@ class Fauxmo(asyncio.Protocol):
             "<controlURL>/upnp/control/metainfo1</controlURL>"
             "<eventSubURL>/upnp/event/metainfo1</eventSubURL>"
             "<SCPDURL>/metainfoservice.xml</SCPDURL>"
+            "</service>"
+            "<service>"
+            "<serviceType>urn:Belkin:service:insight:1</serviceType>"
+            "<serviceId>urn:Belkin:serviceId:insight1</serviceId>"
+            "<controlURL>/upnp/control/insight1</controlURL>"
+            "<eventSubURL>/upnp/event/insight1</eventSubURL>"
+            "<SCPDURL>/insightservice.xml</SCPDURL>"
             "</service>"
             "</serviceList>"
             "</device>"
@@ -133,8 +191,9 @@ class Fauxmo(asyncio.Protocol):
             's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
             "<s:Body>"
             "<u:{action}{action_type}Response "
-            'xmlns:u="urn:Belkin:service:basicevent:1">'
+            'xmlns:u="urn:Belkin:service:{service_type}:1">'
             "<{action_type}>{return_val}</{action_type}>"
+            "<CountdownEndTime>0</CountdownEndTime><deviceCurrentTime>1611532922</deviceCurrentTime>"
             "</u:{action}{action_type}Response>"
             "</s:Body>"
             "</s:Envelope>"
@@ -143,11 +202,16 @@ class Fauxmo(asyncio.Protocol):
         command_format = (
             'SOAPACTION:"urn:Belkin:service:basicevent:1#{}"'
         ).format
-
+        
+        command_insight_format = (
+            'SOAPACTION:"urn:Belkin:service:insight:1#{}"'
+        ).format
+        
         soap_message: str | None = None
         action: str | None = None
         action_type: str | None = None
         return_val: str | None = None
+        service_type: str | None = None
         success: bool = False
 
         if command_format("GetBinaryState").casefold() in msg.casefold().replace(" ", ""):
@@ -155,32 +219,34 @@ class Fauxmo(asyncio.Protocol):
 
             action = "Get"
             action_type = "BinaryState"
-
+            service_type = "basicevent"
             state = self.plugin.get_state().casefold()
             logger.info(f"{self.plugin.name} state: {state}")
 
             if state in ["off", "on"]:
                 success = True
                 return_val = str(int(state.lower() == "on"))
-        elif command_format("GetInsightParams").casefold() in msg.casefold().replace(" ", ""):
+        elif command_insight_format("GetInsightParams").casefold() in msg.casefold().replace(" ", ""):
+            random_number = random.randint(1000, 300000)
             action = "Get"
             action_type = "InsightParams"
-            return_val = "8|1549126755|0|0|0|9319|10|0|0|0.000000|7000"
+            service_type = "insight"
+            return_val = f"8|1549126755|0|0|0|9319|10|{random_number}|0|0.000000|7000"
             success = True
             logger.info(f"{self.plugin.name} returning insight parameters")
 
         elif command_format("SetBinaryState").casefold() in msg.casefold().replace(" ", ""):
             action = "Set"
             action_type = "BinaryState"
-
+            service_type = "basicevent"
             if "<BinaryState>0</BinaryState>" in msg:
                 logger.info(f"Attempting to turn off {self.plugin.name}")
-                return_val = "0"
+                return_val = "0|1611532923|231|300|183183|1209600|8|1170|1164707|99830512"
                 success = self.plugin.off()
 
             elif "<BinaryState>1</BinaryState>" in msg:
                 logger.info(f"Attempting to turn on {self.plugin.name}")
-                return_val = "1"
+                return_val = "8|1611530424|231|300|183183|1209600|8|1190|1164707|99830512"
                 success = self.plugin.on()
 
             else:
@@ -189,13 +255,14 @@ class Fauxmo(asyncio.Protocol):
         elif command_format("GetFriendlyName").casefold() in msg.casefold().replace(" ", ""):
             action = "Get"
             action_type = "FriendlyName"
+            service_type = "basicevent"
             return_val = self.plugin.name
             success = True
             logger.info(f"{self.plugin.name} returning friendly name")
 
         if success:
             soap_message = soap_format(
-                action=action, action_type=action_type, return_val=return_val
+                action=action, action_type=action_type, service_type=service_type, return_val=return_val
             )
 
             response = self.add_http_headers(soap_message)
@@ -206,6 +273,257 @@ class Fauxmo(asyncio.Protocol):
                 f"Unable to complete command for {self.plugin.name}:\n{msg}"
             )
             logger.warning(errmsg)
+        self.transport.close()
+
+    def handle_insight(self) -> None:
+        """Respond to request for insight."""
+        if not self.transport:
+            raise Exception("No transport")
+        
+        insight_xml = (
+            '<?xml version="1.0"?>'
+            '<scpd xmlns="urn:Belkin:service-1-0">'
+            "<specVersion>"
+            "<major>1</major>"
+            "<minor>0</minor>"
+            "</specVersion>"
+            "<actionList>"
+            "<action>"
+            "<name>GetPower</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>InstantPower</name>"
+            "<relatedStateVariable>InstantPower</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetTodayKWH</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>TodayKWH</name>"
+            "<relatedStateVariable>TodayKWH</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>SetAutoPowerThreshold</name>"
+            "<argumentList>"
+            "<argument>"
+            "<name>PowerThreshold</name>"
+            "<relatedStateVariable>PowerThreshold</relatedStateVariable>"
+            "<direction>in</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetPowerThreshold</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>PowerThreshold</name>"
+            "<relatedStateVariable>PowerThreshold</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>SetPowerThreshold</name>"
+            "<argumentList>"
+            "<argument>"
+            "<name>PowerThreshold</name>"
+            "<relatedStateVariable>PowerThreshold</relatedStateVariable>"
+            "<direction>in</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>ResetPowerThreshold</name>"
+            "<argumentList>"
+            "<argument>"
+            "<name>PowerThreshold</name>"
+            "<relatedStateVariable>PowerThreshold</relatedStateVariable>"
+            "<direction>in</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetInsightInfo</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>InsightInfo</name>"
+            "<relatedStateVariable>InsightInfo</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetInsightParams</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>InsightParams</name>"
+            "<relatedStateVariable>InsightParams</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetONFor</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>ONFor</name>"
+            "<relatedStateVariable>ONFor</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetInSBYSince</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>InSBYSince</name>"
+            "<relatedStateVariable>InSBYSince</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetTodayONTime</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>TodayONTime</name>"
+            "<relatedStateVariable>TodayONTime</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetTodaySBYTime</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>TodaySBYTime</name>"
+            "<relatedStateVariable>TodaySBYTime</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>ScheduleDataExport</name>"
+            "<argumentList>"
+            "<argument>"
+            "<name>EmailAddress</name>"
+            "<relatedStateVariable>EmailAddress</relatedStateVariable>"
+            "<direction>in</direction>"
+            "</argument>"
+            "<argument>"
+            "<name>DataExportType</name>"
+            "<relatedStateVariable>DataExportType</relatedStateVariable>"
+            "<direction>in</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "<action>"
+            "<name>GetDataExportInfo</name>"
+            "<argumentList>"
+            "<argument>"
+            "<retval />"
+            "<name>LastDataExportTS</name>"
+            "<relatedStateVariable>LastDataExportTS</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "<argument>"
+            "<retval />"
+            "<name>DataExportType</name>"
+            "<relatedStateVariable>DataExportType</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "<argument>"
+            "<retval />"
+            "<name>EmailAddress</name>"
+            "<relatedStateVariable>EmailAddress</relatedStateVariable>"
+            "<direction>out</direction>"
+            "</argument>"
+            "</argumentList>"
+            "</action>"
+            "</actionList>"
+            "<serviceStateTable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>InstantPower</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>TodayKWH</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>InsightInfo</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>InsightParams</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>TodayONTime</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>InSBYSince</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>ONFor</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>TodaySBYTime</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>PowerThreshold</name>"
+            "<dataType>String</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>EmailAddress</name>"
+            "<dataType>string</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>DataExportType</name>"
+            "<dataType>string</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            '<stateVariable sendEvents="yes">'
+            "<name>LastDataExportTS</name>"
+            "<dataType>string</dataType>"
+            "<defaultValue>0</defaultValue>"
+            "</stateVariable>"
+            "</serviceStateTable>"
+            "</scpd>"
+        ) + 2 * Fauxmo.NEWLINE
+
+        insight_response = self.add_http_headers(insight_xml)
+        logger.debug(f"Fauxmo response to insight request:\n{insight_response}")
+        self.transport.write(insight_response.encode())
         self.transport.close()
 
     def handle_metainfo(self) -> None:
@@ -374,6 +692,7 @@ class SSDPServer(asyncio.DatagramProtocol):
             "ST: urn:Belkin:device:**",
             "ST: urn:Belkin:device:",
             "ST: urn:Belkin:service:basicevent:1",
+            "ST: urn:Belkin:service:insight:1",
             "ST: upnp:rootdevice",
             "ST: ssdp:all",
         ]
@@ -410,6 +729,9 @@ class SSDPServer(asyncio.DatagramProtocol):
             addr: Address sending search request
 
         """
+        if discover_pattern == "ST: urn:Belkin:device:":
+            discover_pattern = "ST: urn:Belkin:device:**"
+        
         date_str = formatdate(timeval=None, localtime=False, usegmt=True)
         for device in self.devices:
             name = device["name"]
@@ -419,7 +741,7 @@ class SSDPServer(asyncio.DatagramProtocol):
             location = f"http://{ip_address}:{port}/setup.xml"
             serial = make_serial(name)
             usn = (
-                f"uuid:Socket-1_0-{serial}::"
+                f"uuid:Insight-1_0-{serial}::"
                 f'{discover_pattern.lstrip("ST: ")}'
             )
 
@@ -432,7 +754,7 @@ class SSDPServer(asyncio.DatagramProtocol):
                     f"LOCATION: {location}",
                     'OPT: "http://schemas.upnp.org/upnp/1/0/"; ns=01',
                     f"01-NLS: {uuid.uuid4()}",
-                    "SERVER: Fauxmo, UPnP/1.0, Unspecified",
+                    "SERVER: Unspecified, UPnP/1.0, Unspecified",
                     f"{discover_pattern}",
                     f"USN: {usn}",
                 ]
